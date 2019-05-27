@@ -6,6 +6,10 @@ using System;
 using System.IO;
 using System.Xml.Serialization;
 using Android.OS;
+using Android.Widget;
+using Android.Graphics;
+using Java.Net;
+using System.Threading.Tasks;
 
 namespace Plugin.LocalNotifications
 {
@@ -15,12 +19,15 @@ namespace Plugin.LocalNotifications
     public class LocalNotificationsImplementation : ILocalNotifications
     {
         string _packageName => Application.Context.PackageName;
-        NotificationManager _manager => (NotificationManager)Application.Context.GetSystemService(Context.NotificationService);
+        NotificationManager _manager => (NotificationManager)Application.Context.ApplicationContext.GetSystemService(Context.NotificationService);
+
+        private const string actionName = "com.beside.dotoribox.ClickAction";
 
         /// <summary>
         /// Get or Set Resource Icon to display
         /// </summary>
         public static int NotificationIconId { get; set; }
+        public static int NotificationLargeIconId { get; set; }
 
         /// <summary>
         /// Show a local notification
@@ -28,16 +35,33 @@ namespace Plugin.LocalNotifications
         /// <param name="title">Title of the notification</param>
         /// <param name="body">Body or description of the notification</param>
         /// <param name="id">Id of the notification</param>
-        public void Show(string title, string body, int id = 0)
+        public async void Show(string title, string body, int id = 0, int repeat = 0, string[] notifyData = null)
         {
+            var activeContext = Application.Context.ApplicationContext;
+
             var builder = new Notification.Builder(Application.Context);
             builder.SetContentTitle(title);
             builder.SetContentText(body);
-            builder.SetAutoCancel(true);
+
+            //actionIntent.SetFlags(ActivityFlags.SingleTop);
+
+            var url = new URL(notifyData[4]);
+            //Stream stream = url.OpenStream();
+
+            Bitmap bitmap = await Task.Run(async () =>
+            {
+                var connection = url.OpenConnection();
+                var stream = connection.InputStream;
+                Bitmap bitMap = await BitmapFactory.DecodeStreamAsync(stream);
+                return bitMap;
+            });
+
+            //Bitmap bitmap = await GetBitmapAsync(url);
 
             if (NotificationIconId != 0)
             {
                 builder.SetSmallIcon(NotificationIconId);
+                builder.SetLargeIcon(bitmap);
             }
             else
             {
@@ -53,22 +77,81 @@ namespace Plugin.LocalNotifications
 
                 builder.SetChannelId(channelId);
             }
+            else
+            {
+                //activeContext.StartService(actionIntent);
+            }
+            Intent actionIntent = new Intent();
+            actionIntent.SetAction(actionName);
+            actionIntent.PutExtra("id", id);
+            actionIntent.PutExtra("actionType", "ShowWeb");
+            actionIntent.PutExtra("notifyData", notifyData);
+            actionIntent.SetType("text/plain");
+            PendingIntent actionPendingIntent = PendingIntent.GetService(activeContext, id, actionIntent, PendingIntentFlags.OneShot);
 
-            var resultIntent = GetLauncherActivity();
-            resultIntent.SetFlags(ActivityFlags.NewTask | ActivityFlags.ClearTask);
-            var stackBuilder = Android.Support.V4.App.TaskStackBuilder.Create(Application.Context);
-            stackBuilder.AddNextIntent(resultIntent);
-            var resultPendingIntent =
-                stackBuilder.GetPendingIntent(0, (int)PendingIntentFlags.UpdateCurrent);
-            builder.SetContentIntent(resultPendingIntent);
+            //var stackBuilder = Android.Support.V4.App.TaskStackBuilder.Create(Application.Context);
+            //stackBuilder.AddNextIntent(actionIntent);
+            //var actionPendingIntent = stackBuilder.GetPendingIntent(0, (int)PendingIntentFlags.OneShot);
+            builder.SetContentIntent(actionPendingIntent);
+
+            Intent settingIntent = new Intent();
+            settingIntent.SetAction(actionName);
+            settingIntent.PutExtra("id", id);
+            settingIntent.PutExtra("actionType", "Edit");
+            settingIntent.PutExtra("notifyData", notifyData);
+            settingIntent.SetType("text/plain");//이거 말고 다른 type 찾아보기
+            PendingIntent settingPendingIntent = PendingIntent.GetService(activeContext, id + 1, settingIntent, PendingIntentFlags.OneShot);
+
+            Intent deleteIntent = new Intent();
+            deleteIntent.SetAction(actionName);
+            deleteIntent.PutExtra("id", id);
+            deleteIntent.PutExtra("actionType", "Delete");
+            deleteIntent.PutExtra("notifyData", notifyData);
+            deleteIntent.SetType("text/plain");//이거 말고 다른 type 찾아보기
+            PendingIntent deletePendingIntent = PendingIntent.GetService(activeContext, id + 2, deleteIntent, PendingIntentFlags.OneShot);
+
+            builder.AddAction(new Notification.Action(NotificationIconId, "삭제", deletePendingIntent));
+            builder.AddAction(new Notification.Action(NotificationIconId, "설정", settingPendingIntent));
+            builder.SetAutoCancel(true);
 
             _manager.Notify(id, builder.Build());
+
+            if (repeat != 0)
+            {
+                var dateTime = DateTime.Now;
+                switch (repeat)
+                {
+                    case 1:
+                        dateTime = dateTime.AddDays(1);
+                        break;
+                    case 2:
+                        dateTime = dateTime.AddDays(7);
+                        break;
+                    case 3:
+                        dateTime = dateTime.AddMonths(1);
+                        break;
+                    case 4:
+                        dateTime = dateTime.AddYears(1);
+                        break;
+                    case 5:
+                        dateTime = dateTime.AddSeconds(20);
+                        break;
+                }
+                CrossLocalNotifications.Current.Show(title, body, id, dateTime, repeat, notifyData);
+            }
         }
 
         public static Intent GetLauncherActivity()
         {
             var packageName = Application.Context.PackageName;
             return Application.Context.PackageManager.GetLaunchIntentForPackage(packageName);
+        }
+
+        private async Task<Bitmap> GetBitmapAsync(URL url)
+        {
+            Stream stream = url.OpenStream();
+            Bitmap bitmap = await BitmapFactory.DecodeStreamAsync(stream);
+            return bitmap;
         }
 
         /// <summary>
@@ -78,15 +161,19 @@ namespace Plugin.LocalNotifications
         /// <param name="body">Body or description of the notification</param>
         /// <param name="id">Id of the notification</param>
         /// <param name="notifyTime">Time to show notification</param>
-        public void Show(string title, string body, int id, DateTime notifyTime)
+        public void Show(string title, string body, int id, DateTime notifyTime, int repeat, string[] notifyData)
         {
             var intent = CreateIntent(id);
 
-            var localNotification = new LocalNotification();
-            localNotification.Title = title;
-            localNotification.Body = body;
-            localNotification.Id = id;
-            localNotification.NotifyTime = notifyTime;
+            var localNotification = new LocalNotification
+            {
+                Title = title,
+                Body = body,
+                Id = id,
+                NotifyTime = notifyTime,
+                Repeat = repeat,
+                NotifyData = notifyData
+            };
             if (NotificationIconId != 0)
             {
                 localNotification.IconId = NotificationIconId;
